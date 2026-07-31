@@ -138,6 +138,26 @@ module ActiveRecord
       assert_operator Normalizer.normalize(sql).length, :<=, Normalizer::MAX_LENGTH
     end
 
+    # The same logical query as each adapter actually emits it. Bind styles
+    # differ per adapter, so normalization has to converge on one shape for
+    # duplicate detection to work regardless of the database in use.
+    def test_adapter_bind_styles_converge_on_one_shape
+      postgresql = %{SELECT "users".* FROM "users" WHERE "users"."id" = $1 LIMIT $2}
+      sqlite = %{SELECT "users".* FROM "users" WHERE "users"."id" = ? LIMIT ?}
+      mysql = %{SELECT `users`.* FROM `users` WHERE `users`.`id` = 42 LIMIT 1}
+
+      assert_equal Normalizer.normalize(postgresql), Normalizer.normalize(sqlite)
+
+      # MySQL quotes identifiers differently, so its shape differs by quoting
+      # only. The values are still normalized away.
+      assert_equal %{SELECT `users`.* FROM `users` WHERE `users`.`id` = ? LIMIT ?},
+        Normalizer.normalize(mysql)
+
+      [postgresql, sqlite, mysql].each do |sql|
+        assert_equal "users", Normalizer.table_name(sql)
+      end
+    end
+
     def test_truncated_reports_whether_the_cap_was_hit
       short = Normalizer.normalize("SELECT * FROM t WHERE id = 1")
       assert_not Normalizer.truncated?(short)
