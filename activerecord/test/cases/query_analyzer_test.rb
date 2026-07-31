@@ -196,6 +196,7 @@ module ActiveRecord
       @original_max = QueryAnalyzer.max_tracked_queries
       @original_duplicates = QueryAnalyzer.detect_duplicates
       @original_n_plus_one = QueryAnalyzer.detect_n_plus_one
+      @original_slow = QueryAnalyzer.slow_query_threshold
     end
 
     teardown do
@@ -203,6 +204,57 @@ module ActiveRecord
       QueryAnalyzer.max_tracked_queries = @original_max
       QueryAnalyzer.detect_duplicates = @original_duplicates
       QueryAnalyzer.detect_n_plus_one = @original_n_plus_one
+      QueryAnalyzer.slow_query_threshold = @original_slow
+    end
+
+    def test_slow_queries_are_not_reported_without_a_threshold
+      assert_nil QueryAnalyzer.slow_query_threshold
+
+      @collector.record(sql: "SELECT * FROM users WHERE id = 1", duration: 500.0)
+
+      assert_empty @collector.slow_queries
+    end
+
+    def test_detects_queries_at_or_over_the_slow_threshold
+      QueryAnalyzer.slow_query_threshold = 100.0
+
+      @collector.record(sql: "SELECT * FROM slow WHERE id = 1", duration: 150.0)
+      @collector.record(sql: "SELECT * FROM fast WHERE id = 1", duration: 1.0)
+
+      assert_equal 1, @collector.slow_queries.size
+      assert_equal "slow", @collector.slow_queries.first.table_name
+    end
+
+    def test_slow_queries_track_the_worst_execution_not_the_average
+      QueryAnalyzer.slow_query_threshold = 100.0
+
+      # Averages to well under the threshold, but one run was slow.
+      @collector.record(sql: "SELECT * FROM t WHERE id = 1", duration: 1.0)
+      @collector.record(sql: "SELECT * FROM t WHERE id = 2", duration: 200.0)
+      8.times { @collector.record(sql: "SELECT * FROM t WHERE id = 3", duration: 1.0) }
+
+      stat = @collector.slow_queries.first
+      assert_not_nil stat
+      assert_equal 200.0, stat.max_duration
+      assert_operator stat.average_duration, :<, 100.0
+    end
+
+    def test_slow_queries_are_ordered_by_worst_execution
+      QueryAnalyzer.slow_query_threshold = 10.0
+
+      @collector.record(sql: "SELECT * FROM a WHERE id = 1", duration: 50.0)
+      @collector.record(sql: "SELECT * FROM b WHERE id = 1", duration: 300.0)
+
+      assert_equal "b", @collector.slow_queries.first.table_name
+    end
+
+    def test_cached_queries_are_never_reported_as_slow
+      QueryAnalyzer.slow_query_threshold = 1.0
+
+      # A cache hit does no database work, so it isn't a slow query.
+      @collector.record(sql: "SELECT * FROM t WHERE id = 1", duration: 99.0, cached: true)
+
+      assert_empty @collector.slow_queries
     end
 
     def test_a_new_collector_is_empty
@@ -327,6 +379,53 @@ module ActiveRecord
     end
   end
 
+  # Detectors take plain stats rather than reaching into a Collector, so they
+  # can be exercised directly without a database.
+  class QueryAnalyzerDetectorsTest < ActiveRecord::TestCase
+    Detectors = ActiveRecord::QueryAnalyzer::Detectors
+    QueryStat = ActiveRecord::QueryAnalyzer::Collector::QueryStat
+
+    def build_stat(sql, table, count: 1, max_duration: 0.0, cached_count: 0)
+      stat = QueryStat.new(sql, table)
+      stat.count = count
+      stat.max_duration = max_duration
+      stat.cached_count = cached_count
+      stat
+    end
+
+    def test_duplicates_detector_selects_repeated_shapes
+      once = build_stat("SELECT * FROM a WHERE id = ?", "a", count: 1)
+      twice = build_stat("SELECT * FROM b WHERE id = ?", "b", count: 2)
+
+      assert_equal [twice], Detectors::Duplicates.call([once, twice])
+    end
+
+    def test_n_plus_one_detector_requires_a_parameterized_select
+      original = QueryAnalyzer.n_plus_one_threshold
+      QueryAnalyzer.n_plus_one_threshold = 3
+
+      parameterized = build_stat("SELECT * FROM a WHERE id = ?", "a", count: 5)
+      constant = build_stat("SELECT current_user", nil, count: 5)
+      write = build_stat("INSERT INTO a (id) VALUES (?)", "a", count: 5)
+
+      assert_equal [parameterized],
+        Detectors::NPlusOne.call([parameterized, constant, write])
+    ensure
+      QueryAnalyzer.n_plus_one_threshold = original
+    end
+
+    def test_slow_queries_detector_is_disabled_without_a_threshold
+      original = QueryAnalyzer.slow_query_threshold
+      QueryAnalyzer.slow_query_threshold = nil
+
+      slow = build_stat("SELECT * FROM a WHERE id = ?", "a", count: 1, max_duration: 900.0)
+
+      assert_empty Detectors::SlowQueries.call([slow])
+    ensure
+      QueryAnalyzer.slow_query_threshold = original
+    end
+  end
+
   class QueryAnalyzerReportTest < ActiveRecord::TestCase
     def build_report(&block)
       collector = ActiveRecord::QueryAnalyzer::Collector.new
@@ -378,6 +477,85 @@ module ActiveRecord
         2.times { |i| c.record(sql: "SELECT c#{i} FROM users WHERE id = 1") }
       end
       assert_match(/2 queries /, many.to_s)
+    end
+
+    def test_summary_reports_n_plus_one_before_duplicates
+      report = build_report do |c|
+        6.times { |i| c.record(sql: "SELECT * FROM authors WHERE id = #{i}") }
+      end
+
+      summary = report.to_s
+      # The N+1 is usually the cause of the duplicates, so it reads first.
+      assert_operator summary.index("Potential N+1"), :<, summary.index("Duplicate queries")
+    end
+
+    def test_summary_puts_the_eager_loading_hint_on_its_own_line
+      report = build_report do |c|
+        6.times { |i| c.record(sql: "SELECT * FROM authors WHERE id = #{i}") }
+      end
+
+      assert_match(/^      -> consider eager loading :authors$/, report.to_s)
+    end
+
+    def test_summary_formats_sub_millisecond_timings_as_microseconds
+      report = build_report do |c|
+        c.record(sql: "SELECT * FROM users WHERE id = 1", duration: 0.25)
+      end
+
+      # Rounding these to "0.0ms" would make the report useless for comparing
+      # one query against another.
+      assert_match(/250us/, report.to_s)
+    end
+
+    def test_summary_formats_larger_timings_as_milliseconds
+      report = build_report do |c|
+        c.record(sql: "SELECT * FROM users WHERE id = 1", duration: 12.34)
+      end
+
+      assert_match(/12\.3ms/, report.to_s)
+    end
+
+    def test_summary_omits_the_cached_count_when_nothing_was_cached
+      report = build_report { |c| c.record(sql: "SELECT * FROM users WHERE id = 1") }
+
+      assert_no_match(/cached/, report.to_s)
+    end
+
+    def test_summary_includes_the_cached_count_when_present
+      report = build_report do |c|
+        c.record(sql: "SELECT * FROM users WHERE id = 1", cached: true)
+      end
+
+      assert_match(/1 cached/, report.to_s)
+    end
+
+    def test_summary_reports_slow_queries
+      original = QueryAnalyzer.slow_query_threshold
+      QueryAnalyzer.slow_query_threshold = 10.0
+
+      report = build_report do |c|
+        c.record(sql: "SELECT * FROM reports WHERE id = 1", duration: 250.0)
+      end
+
+      summary = report.to_s
+      assert_match(/Slow queries \(over 10\.0ms\)/, summary)
+      assert_match(/250\.0ms/, summary)
+    ensure
+      QueryAnalyzer.slow_query_threshold = original
+    end
+
+    def test_a_slow_query_alone_makes_a_report_unclean
+      original = QueryAnalyzer.slow_query_threshold
+      QueryAnalyzer.slow_query_threshold = 10.0
+
+      report = build_report do |c|
+        c.record(sql: "SELECT * FROM reports WHERE id = 1", duration: 250.0)
+      end
+
+      assert_predicate report, :slow_queries?
+      assert_not_predicate report, :clean?
+    ensure
+      QueryAnalyzer.slow_query_threshold = original
     end
 
     def test_to_h_is_structured_for_custom_reporters

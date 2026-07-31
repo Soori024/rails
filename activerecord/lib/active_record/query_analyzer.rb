@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_record/query_analyzer/sql_normalizer"
+require "active_record/query_analyzer/detectors"
 require "active_record/query_analyzer/collector"
 require "active_record/query_analyzer/report"
 
@@ -17,11 +18,12 @@ module ActiveRecord
   #
   # With the analyzer on, a summary is logged at the end of each request:
   #
-  #   [ActiveRecord::QueryAnalyzer] 27 queries (0 cached) in 14.2ms
-  #     Duplicate queries (12 redundant):
-  #       13x  SELECT * FROM "users" WHERE "users"."id" = ? LIMIT ?
+  #   [ActiveRecord::QueryAnalyzer] 27 queries in 14.2ms
   #     Potential N+1 queries:
-  #       13x  SELECT * FROM "users" WHERE "users"."id" = ? LIMIT ? (consider eager loading :users)
+  #       13x (9.8ms)  SELECT * FROM "users" WHERE "users"."id" = ? LIMIT ?
+  #         -> consider eager loading :users
+  #     Duplicate queries (12 redundant queries):
+  #       13x (9.8ms)  SELECT * FROM "users" WHERE "users"."id" = ? LIMIT ?
   #
   # A block of code can also be analyzed directly, which is the most convenient
   # form inside tests:
@@ -59,6 +61,11 @@ module ActiveRecord
 
       # Whether to report potential N+1 queries. Defaults to +true+.
       attr_accessor :detect_n_plus_one
+
+      # Duration in milliseconds at or above which a single query execution is
+      # reported as slow. Defaults to +nil+, which disables slow query
+      # reporting -- what counts as slow is too application-specific to guess.
+      attr_accessor :slow_query_threshold
 
       # Upper bound on distinct query shapes tracked per unit of execution.
       # Prevents unbounded memory growth. Defaults to 1000.
@@ -207,6 +214,7 @@ module ActiveRecord
     self.n_plus_one_threshold = 5
     self.detect_duplicates = true
     self.detect_n_plus_one = true
+    self.slow_query_threshold = nil
     self.max_tracked_queries = 1000
     self.reporter = nil
 

@@ -35,37 +35,31 @@ module ActiveRecord
       # in-string "--" to end of line, silently discarding the rest of the
       # predicate and leaving an unterminated quote -- which makes unrelated
       # queries collapse onto the same shape and fabricates duplicate reports.
-      TOKENS = Regexp.union(
-        # Single-quoted strings, including the SQL-standard escaped quote ('')
-        # and the backslash escapes MySQL accepts.
-        /'(?:[^'\\]|''|\\.)*'/,
-        # PostgreSQL dollar-quoted strings, e.g. $$body$$ or $tag$body$tag$.
-        # The tag is captured by name: Regexp.union renumbers positional groups,
-        # which would break a \1 backreference.
-        /\$(?<dq>\w*)\$.*?\$\k<dq>\$/m,
-        # Block and line comments, including the tags QueryLogs appends.
-        %r{/\*.*?\*/}m,
-        /--[^\n]*/,
-        # Double-quoted and backtick identifiers are matched so that a comment
-        # marker inside a quoted column name can't be mistaken for a comment.
-        /"(?:[^"]|"")*"/,
-        /`(?:[^`]|``)*`/,
-        # PostgreSQL casts, matched before the ":name" bind form below so that
-        # "::text" keeps its type rather than being read as a bind parameter.
-        /::\w+/,
-        # MySQL system variables such as @@version name a server setting, so
-        # they are structural. Matched before the bind forms to keep them.
-        /@@\w+/,
-        # Bind placeholders across adapters: $1 (PostgreSQL), @name (SQL
-        # Server) and :name.
-        /\$\d+/,
-        /@\w+/,
-        /:\w+/,
+      TOKENS = /
+        (?<comment>
+          \/\*.*?\*\/ |     # block comments, including QueryLogs tags
+          --[^\n]*          # line comments
+        )
+        |
+        (?<keep>
+          "(?:[^"]|"")*" |  # double-quoted identifiers
+          `(?:[^`]|``)*` |  # backtick identifiers (MySQL)
+          ::\w+          |  # casts; matched before the ":name" bind form
+          @@\w+             # MySQL system variables, e.g. @@version
+        )
+        |
+        # Everything below is data, and normalizes to the placeholder.
+        '(?:[^'\\]|''|\\.)*'          # strings, with '' and MySQL \ escapes
+        |
+        \$(?<dq>\w*)\$.*?\$\k<dq>\$   # PostgreSQL dollar-quoted strings
+        |
+        \$\d+ | @\w+ | :\w+           # binds: $1, @name, :name
+        |
         # Numeric literals, including a leading sign, decimals, scientific
         # notation and hex. The sign is part of the literal: without it
         # "= -5" and "= 5" would normalize to different shapes.
-        /(?<![\w"`])-?(?:0x\h+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b/,
-      )
+        (?<![\w"`])-?(?:0x\h+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b
+      /xm
 
       # A parenthesized list of placeholders, e.g. "(?, ?, ?)" left behind once
       # the individual literals have been replaced.
@@ -94,17 +88,23 @@ module ActiveRecord
 
         return "" if sql.empty?
 
-        # One left-to-right pass. Each token is replaced according to what it
-        # is: literals and binds become the placeholder, comments are dropped,
-        # and quoted identifiers are preserved verbatim because they are part
-        # of the query's shape rather than of its data.
-        normalized = sql.gsub(TOKENS) do |token|
-          case token
-          when /\A(?:--|\/\*)/ then " "
-          # Quoted identifiers, casts and system variables are structural, so
-          # they are kept as-is rather than replaced.
-          when /\A["`]/, /\A::/, /\A@@/ then token
-          else PLACEHOLDER
+        # One left-to-right pass. Structural tokens (quoted identifiers, casts,
+        # system variables) are matched only so that a comment marker inside
+        # them isn't mistaken for a comment; they are then written back
+        # unchanged. Comments collapse to a space and everything else -- the
+        # literals and binds -- becomes the placeholder.
+        #
+        # The two structural branches are named in the pattern so the regex
+        # engine reports which one matched. Re-testing each token against a
+        # case chain would run several more matches per token, and identifiers
+        # are the most common token in a typical query.
+        normalized = sql.gsub(TOKENS) do
+          if Regexp.last_match(:keep)
+            Regexp.last_match(:keep)
+          elsif Regexp.last_match(:comment)
+            " "
+          else
+            PLACEHOLDER
           end
         end
 

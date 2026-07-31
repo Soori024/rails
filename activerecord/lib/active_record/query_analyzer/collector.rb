@@ -21,7 +21,7 @@ module ActiveRecord
       # Aggregated totals for one normalized query shape.
       class QueryStat # :nodoc:
         attr_reader :normalized_sql, :table_name
-        attr_accessor :count, :total_duration, :cached_count
+        attr_accessor :count, :total_duration, :cached_count, :max_duration
 
         # Deliberately keeps no copy of the raw SQL. The normalized shape is
         # capped at SqlNormalizer::MAX_LENGTH, so retaining the original -- one
@@ -33,6 +33,7 @@ module ActiveRecord
           @count = 0
           @cached_count = 0
           @total_duration = 0.0
+          @max_duration = 0.0
         end
 
         # Number of times this shape ran beyond the first -- the count that
@@ -43,6 +44,10 @@ module ActiveRecord
 
         def duplicated?
           count > 1
+        end
+
+        def average_duration
+          count.zero? ? 0.0 : total_duration / count
         end
       end
 
@@ -56,11 +61,32 @@ module ActiveRecord
         # Count of queries seen after max_tracked_queries was reached. They
         # still contribute to the totals but get no per-shape entry.
         @ignored_queries = 0
+        # Memoizes normalization by raw SQL, see record.
+        @normalized_cache = {}
       end
 
       # Records one executed query. +duration+ is in milliseconds.
       def record(sql:, name: nil, duration: 0.0, cached: false, binds: nil)
-        normalized = SqlNormalizer.normalize(sql)
+        # Normalizing is by far the most expensive part of recording a query,
+        # and a request issues the same handful of statements over and over --
+        # which is precisely the case this analyzer exists to detect. Caching
+        # by raw SQL turns the repeat encounters into a hash lookup.
+        #
+        # The cache lives on the collector rather than in a global, so it is
+        # confined to one unit of execution: no locking, and it is discarded
+        # with the request instead of growing for the life of the process.
+        normalized = @normalized_cache[sql]
+
+        unless normalized
+          normalized = SqlNormalizer.normalize(sql)
+          # Bound the cache the same way the stats are bounded. Queries whose
+          # values are interpolated rather than bound produce a distinct string
+          # every time, which would otherwise grow this without limit.
+          if @normalized_cache.size < QueryAnalyzer.max_tracked_queries
+            @normalized_cache[sql] = normalized
+          end
+        end
+
         return if normalized.empty?
 
         @total_queries += 1
@@ -86,6 +112,9 @@ module ActiveRecord
         stat.count += 1
         stat.cached_count += 1 if cached
         stat.total_duration += duration
+        # Track the worst single execution, not just the average: a shape that
+        # is usually fast but occasionally slow is still worth surfacing.
+        stat.max_duration = duration if duration > stat.max_duration
 
         nil
       end
@@ -110,40 +139,27 @@ module ActiveRecord
         @total_queries.zero?
       end
 
+      # The detection heuristics themselves live in Detectors, so that adding an
+      # analysis doesn't mean growing this class.
+
       # Query shapes that ran more than once, worst offender first.
       def duplicates
-        return [] unless QueryAnalyzer.detect_duplicates
-
-        @query_stats.values.select(&:duplicated?).sort_by { |stat| -stat.count }
+        Detectors::Duplicates.call(@query_stats.values)
       end
 
       def duplicate_query_count
         duplicates.sum(&:duplicate_count)
       end
 
-      # Shapes that look like an N+1: the same parameterized query, against the
-      # same table, repeated at least +n_plus_one_threshold+ times.
-      #
-      # Requiring a bind placeholder is what separates a genuine per-record
-      # lookup from a legitimately repeated constant query (a `SELECT 1`
-      # health check, or a repeated `SELECT * FROM settings LIMIT 1`), which
-      # keeps the false-positive rate down.
+      # Query shapes that look like an N+1, most frequent first.
       def n_plus_one_candidates
-        return [] unless QueryAnalyzer.detect_n_plus_one
+        Detectors::NPlusOne.call(@query_stats.values)
+      end
 
-        threshold = QueryAnalyzer.n_plus_one_threshold
-
-        @query_stats.values.select { |stat|
-          next false unless stat.count >= threshold
-          next false unless stat.normalized_sql.match?(/\ASELECT\b/i)
-
-          # A truncated shape may have lost its only placeholder to the length
-          # cap. Repeating an identical constant SELECT that long is not a
-          # realistic pattern, so treat it as a candidate rather than drop a
-          # genuine N+1 on a technicality.
-          stat.normalized_sql.include?(SqlNormalizer::PLACEHOLDER) ||
-            SqlNormalizer.truncated?(stat.normalized_sql)
-        }.sort_by { |stat| -stat.count }
+      # Query shapes whose slowest execution reached slow_query_threshold,
+      # worst first.
+      def slow_queries
+        Detectors::SlowQueries.call(@query_stats.values)
       end
 
       # A Report snapshot of everything gathered so far.
@@ -154,12 +170,14 @@ module ActiveRecord
           total_duration: total_duration,
           duplicates: duplicates,
           n_plus_one_candidates: n_plus_one_candidates,
+          slow_queries: slow_queries,
           ignored_queries: ignored_queries,
         )
       end
 
       def reset
         @query_stats.clear
+        @normalized_cache.clear
         @total_queries = 0
         @cached_queries = 0
         @total_duration = 0.0

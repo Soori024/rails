@@ -10,11 +10,18 @@
     ```
 
     ```
-    [ActiveRecord::QueryAnalyzer] 27 queries (0 cached) in 14.2ms
-      Duplicate queries (12 redundant):
-        13x  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ?
+    [ActiveRecord::QueryAnalyzer] 27 queries in 14.2ms
       Potential N+1 queries:
-        13x  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ? (consider eager loading :authors)
+        13x (9.8ms)  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ?
+          -> consider eager loading :authors
+      Duplicate queries (12 redundant queries):
+        13x (9.8ms)  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ?
+    ```
+
+    Slow queries can be reported too, by setting a threshold in milliseconds:
+
+    ```ruby
+    config.active_record.query_analyzer_slow_query_threshold = 100
     ```
 
     A block can also be analyzed directly, which is convenient in tests:

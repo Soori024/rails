@@ -48,6 +48,7 @@ module ActiveRecord
     config.active_record.query_analyzer_n_plus_one_threshold = 5
     config.active_record.query_analyzer_detect_duplicates = true
     config.active_record.query_analyzer_detect_n_plus_one = true
+    config.active_record.query_analyzer_slow_query_threshold = nil
     config.active_record.query_analyzer_max_tracked_queries = 1000
     config.active_record.query_analyzer_reporter = nil
 
@@ -263,6 +264,7 @@ To keep using the current cache store, you can turn off cache versioning entirel
           :query_analyzer_n_plus_one_threshold,
           :query_analyzer_detect_duplicates,
           :query_analyzer_detect_n_plus_one,
+          :query_analyzer_slow_query_threshold,
           :query_analyzer_max_tracked_queries,
           :query_analyzer_reporter,
         )
@@ -479,6 +481,11 @@ To keep using the current cache store, you can turn off cache versioning entirel
           ActiveRecord::QueryAnalyzer.detect_n_plus_one =
             ar_config.query_analyzer_detect_n_plus_one
         end
+
+        # nil is meaningful here -- it disables slow query reporting -- so this
+        # is assigned unconditionally rather than guarded like the others.
+        ActiveRecord::QueryAnalyzer.slow_query_threshold =
+          ar_config.query_analyzer_slow_query_threshold
 
         unless ar_config.query_analyzer_max_tracked_queries.nil?
           ActiveRecord::QueryAnalyzer.max_tracked_queries =

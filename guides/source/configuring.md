@@ -1569,11 +1569,12 @@ config.active_record.query_analyzer = true
 ```
 
 ```
-[ActiveRecord::QueryAnalyzer] 27 queries (0 cached) in 14.2ms
-  Duplicate queries (12 redundant):
-    13x  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ?
+[ActiveRecord::QueryAnalyzer] 27 queries in 14.2ms
   Potential N+1 queries:
-    13x  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ? (consider eager loading :authors)
+    13x (9.8ms)  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ?
+      -> consider eager loading :authors
+  Duplicate queries (12 redundant queries):
+    13x (9.8ms)  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ?
 ```
 
 You can also analyze a block of code directly, which is useful in tests:
@@ -1604,6 +1605,20 @@ Specifies whether the query analyzer reports duplicate queries. Defaults to `tru
 #### `config.active_record.query_analyzer_detect_n_plus_one`
 
 Specifies whether the query analyzer reports potential N+1 queries. Defaults to `true`.
+
+#### `config.active_record.query_analyzer_slow_query_threshold`
+
+The duration in milliseconds at or above which a single query execution is
+reported as slow. Defaults to `nil`, which disables slow query reporting.
+
+```ruby
+config.active_record.query_analyzer_slow_query_threshold = 100
+```
+
+The slowest execution of each query shape is compared against the threshold
+rather than its average, so a query that is usually fast but occasionally slow
+is still reported. Cached queries are never reported as slow, since a query
+cache hit does no database work.
 
 #### `config.active_record.query_analyzer_max_tracked_queries`
 

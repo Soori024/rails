@@ -51,6 +51,7 @@ puts
 
 # Show the report an N+1 produces.
 analyzer.n_plus_one_threshold = 5
+analyzer.slow_query_threshold = ENV["SLOW_QUERY_THRESHOLD"]&.to_f
 report = analyzer.analyze do
   Sample.limit(10).each { |sample| Sample.where(group_id: sample.group_id).to_a }
 end
