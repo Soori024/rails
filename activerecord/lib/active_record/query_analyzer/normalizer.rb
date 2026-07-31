@@ -19,14 +19,19 @@ module ActiveRecord
     # consistently across the PostgreSQL, MySQL and SQLite adapters without
     # pulling in a database specific dependency.
     module Normalizer
-      # Order matters: strings must be collapsed before numbers so that digits
-      # inside string literals are not mistaken for numeric literals.
+      # Single-quoted string literal, honoring the SQL '' escape for an embedded
+      # quote. Note: double-quoted identifiers (e.g. "users") are NOT literals in
+      # standard SQL — they are quoted table/column names — so they are left
+      # untouched on purpose.
       STRING_LITERAL = /'(?:[^']|'')*'/
-      DOUBLE_QUOTED_STRING = /(?<![\w"])"(?:[^"]|"")*"(?=\s*(?:,|\)|$|=|<|>|LIKE|IN))/i
-      NUMERIC_LITERAL = /(?<![\w."'])[-+]?\d+(?:\.\d+)?(?![\w."'])/
+      # Numeric literal, including sign, decimals and scientific notation. The
+      # lookbehind/lookahead keep it from biting into identifiers or the digits
+      # of already-substituted placeholders.
+      NUMERIC_LITERAL = /(?<![\w."'?])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w."'])/
       # Collapses a list of placeholders of any arity, e.g. "IN (?, ?, ?)".
-      IN_LIST = /\bIN\s*\(\s*(?:\?)(?:\s*,\s*\?)*\s*\)/i
-      BIND_PLACEHOLDER = /\$\d+|:\w+/
+      IN_LIST = /\bIN\s*\(\s*\?(?:\s*,\s*\?)*\s*\)/i
+      # Positional ($1) and named (:name) bind placeholders.
+      BIND_PLACEHOLDER = /\$\d+|(?<!:):\w+/
       MULTIPLE_SPACES = /\s+/
 
       PLACEHOLDER = "?"
@@ -45,7 +50,11 @@ module ActiveRecord
           # Replace existing bind placeholders ($1, :name) with a canonical "?".
           normalized.gsub!(BIND_PLACEHOLDER, PLACEHOLDER)
 
-          # Collapse literal values to placeholders.
+          # Collapse literal values to placeholders. Strings first so that
+          # digits inside a string literal are not matched as numbers.
+          # NULL/TRUE/FALSE are intentionally left as-is: parameterized queries
+          # never emit them as literals, and collapsing them would merge
+          # semantically distinct templates (e.g. `IS NULL` vs `= ?`).
           normalized.gsub!(STRING_LITERAL, PLACEHOLDER)
           normalized.gsub!(NUMERIC_LITERAL, PLACEHOLDER)
 

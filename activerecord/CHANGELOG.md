@@ -2,11 +2,14 @@
 
     When enabled, the analyzer observes every SQL query executed through Active
     Record (via `sql.active_record` instrumentation, without changing how any
-    query runs), normalizes it, and reports duplicate query templates and
-    potential N+1 patterns at the end of each request or test.
+    query runs), records its measured duration, normalizes it, and reports
+    duplicate query templates and potential N+1 patterns at the end of each
+    request or test.
 
     It is disabled by default and, once enabled, only activates in the
-    development and test environments.
+    development and test environments. Collection is request-scoped and
+    isolated per thread/fiber, so metrics never leak across concurrent
+    requests, and retention is capped to bound memory use.
 
     ```ruby
     # config/environments/development.rb
@@ -15,6 +18,7 @@
       detect_duplicates: true,
       detect_n_plus_one: true,
       n_plus_one_threshold: 3,
+      max_queries: 5000,
     }
     ```
 

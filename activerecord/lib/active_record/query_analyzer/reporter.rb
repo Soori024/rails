@@ -27,8 +27,12 @@ module ActiveRecord
           summary = collector.summary
           lines = []
           lines << "[QueryAnalyzer] Summary"
-          lines << "  Total queries: #{summary[:total_queries]}"
+          lines << "  Total queries: #{summary[:total_queries]} (#{summary[:cached_queries]} cached)"
           lines << "  Duplicate queries: #{summary[:duplicate_queries]}"
+
+          if summary[:overflowed]
+            lines << "  Note: query retention cap reached; only the first #{QueryAnalyzer.max_queries} queries were analyzed."
+          end
 
           if summary[:duplicate_groups].any?
             lines << "  Duplicated templates:"

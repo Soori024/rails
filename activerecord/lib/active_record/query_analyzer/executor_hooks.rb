@@ -12,9 +12,11 @@ module ActiveRecord
     module ExecutorHooks
       class << self
         # Called when a unit of work begins. Start from a clean slate so metrics
-        # from a previous request on this thread never bleed in.
+        # from a previous request on this thread never bleed in, and re-arm the
+        # subscriber's one-shot error warning for this request.
         def run
           Collector.reset
+          Subscriber.reset_warnings
         end
 
         # Called when a unit of work ends. Emit the summary, then clear.

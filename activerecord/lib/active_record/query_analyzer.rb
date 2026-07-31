@@ -64,6 +64,18 @@ module ActiveRecord
         @n_plus_one_threshold || DEFAULT_N_PLUS_ONE_THRESHOLD
       end
 
+      # Maximum number of queries retained per unit of work. Bounds the
+      # analyzer's own memory footprint; beyond this queries are still counted
+      # but not stored for pattern analysis. Defaults to +5000+.
+      attr_writer :max_queries
+
+      # Default retention cap used when none is configured.
+      DEFAULT_MAX_QUERIES = 5000
+
+      def max_queries
+        @max_queries || DEFAULT_MAX_QUERIES
+      end
+
       # Logger used for reporting. Falls back to ActiveRecord::Base.logger.
       attr_writer :logger
 
@@ -87,9 +99,10 @@ module ActiveRecord
       # +config.active_record.query_analyzer_options+).
       def configure(options = {})
         options = options || {}
-        self.detect_duplicates   = options[:detect_duplicates]   if options.key?(:detect_duplicates)
-        self.detect_n_plus_one   = options[:detect_n_plus_one]   if options.key?(:detect_n_plus_one)
+        self.detect_duplicates    = options[:detect_duplicates]    if options.key?(:detect_duplicates)
+        self.detect_n_plus_one    = options[:detect_n_plus_one]    if options.key?(:detect_n_plus_one)
         self.n_plus_one_threshold = options[:n_plus_one_threshold] if options.key?(:n_plus_one_threshold)
+        self.max_queries          = options[:max_queries]          if options.key?(:max_queries)
         self
       end
 
@@ -108,25 +121,34 @@ module ActiveRecord
         self
       end
 
-      # Runs +block+ with the analyzer temporarily enabled and returns the
-      # Collector holding the metrics gathered during the block. Handy for
+      # Runs +block+ with the analyzer temporarily enabled and returns a
+      # Collector holding *only* the metrics gathered during the block. Handy for
       # tests and one-off profiling:
       #
       #   collector = ActiveRecord::QueryAnalyzer.analyze do
       #     User.all.each { |u| u.account }
       #   end
       #   collector.potential_n_plus_ones # => [...]
+      #
+      # It is safe to call inside a live request: any collector the surrounding
+      # request is already accumulating is saved and restored, so the block's
+      # queries are isolated and never merged into (or wiped from) the outer
+      # request's report.
       def analyze
         was_enabled = @enabled
-        subscribed = Subscriber.subscribed?
+        was_subscribed = Subscriber.subscribed?
+        previous_collector = Collector.current_without_create
+
         self.enabled = true
         Subscriber.subscribe
-        Collector.reset
+        scoped_collector = Collector.swap(Collector.new)
+
         yield
-        Collector.current_without_create || Collector.current
+        scoped_collector
       ensure
+        Collector.swap(previous_collector)
         self.enabled = was_enabled
-        Subscriber.unsubscribe unless subscribed
+        Subscriber.unsubscribe unless was_subscribed
       end
 
       # Resets configuration to defaults. Used by tests.
@@ -135,6 +157,7 @@ module ActiveRecord
         @detect_duplicates = nil
         @detect_n_plus_one = nil
         @n_plus_one_threshold = nil
+        @max_queries = nil
         @logger = nil
       end
     end

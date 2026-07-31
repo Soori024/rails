@@ -37,17 +37,37 @@ module ActiveRecord
         def reset
           ActiveSupport::IsolatedExecutionState[STORE_KEY] = nil
         end
+
+        # Installs +collector+ (or nil) as the current context's collector and
+        # returns it. Used to swap collectors around a scoped #analyze block
+        # without disturbing any surrounding request's collector.
+        def swap(collector)
+          ActiveSupport::IsolatedExecutionState[STORE_KEY] = collector
+        end
       end
 
       attr_reader :queries
 
       def initialize
         @queries = []
+        @overflow = 0
+        @duplicate_groups = [].freeze
+        @duplicate_groups_size = -1
       end
 
       # Records a single observed query. +binds+ is captured defensively (a
       # shallow copy of the values) to avoid retaining adapter internals.
+      #
+      # To bound the analyzer's own memory footprint, no more than
+      # QueryAnalyzer.max_queries statements are retained per unit of work; once
+      # the cap is reached, further queries are counted (via +@overflow+) but not
+      # stored. This keeps a pathological request from exhausting memory.
       def record(sql:, duration_ms:, binds: nil, adapter: nil, cached: false)
+        if @queries.size >= QueryAnalyzer.max_queries
+          @overflow += 1
+          return
+        end
+
         fingerprint = Normalizer.fingerprint(sql, binds)
         @queries << Query.new(
           sql: sql,
@@ -59,9 +79,21 @@ module ActiveRecord
         )
       end
 
-      # Total number of queries recorded (including cached hits).
+      # Total number of queries observed (including cached hits and any that
+      # exceeded the retention cap).
       def total_count
+        @queries.size + @overflow
+      end
+
+      # Number of observed queries that were retained for analysis.
+      def analyzed_count
         @queries.size
+      end
+
+      # Whether the retention cap was hit, meaning some queries were counted but
+      # not analyzed for duplicate/N+1 patterns.
+      def overflowed?
+        @overflow > 0
       end
 
       # Groups of identical query templates executed more than once. Returns an
@@ -102,13 +134,21 @@ module ActiveRecord
         end
       end
 
+      # Number of recorded queries that were served from the query cache.
+      def cached_count
+        @queries.count(&:cached)
+      end
+
       # A plain-Ruby summary suitable for logging or assertions in tests.
       def summary
+        dups = duplicates
         {
           total_queries: total_count,
-          duplicate_queries: duplicates.sum { |d| d[:count] },
-          duplicate_groups: duplicates,
+          cached_queries: cached_count,
+          duplicate_queries: dups.sum { |d| d[:count] },
+          duplicate_groups: dups,
           potential_n_plus_ones: potential_n_plus_ones,
+          overflowed: overflowed?,
         }
       end
 
@@ -121,11 +161,17 @@ module ActiveRecord
         # Groups queries by fingerprint and returns those seen more than once,
         # ordered by descending count. Independent of the +detect_duplicates+
         # toggle so N+1 detection can rely on it directly.
+        #
+        # Memoized against the current query count so that #summary (which reads
+        # duplicates and N+1s) only pays for the O(n) grouping once. The cache is
+        # invalidated automatically whenever another query is recorded.
         def duplicate_groups
+          return @duplicate_groups if @duplicate_groups_size == @queries.size
+
           grouped = Hash.new { |h, k| h[k] = [] }
           @queries.each { |q| grouped[q.fingerprint] << q }
 
-          grouped.filter_map do |fingerprint, occurrences|
+          @duplicate_groups = grouped.filter_map do |fingerprint, occurrences|
             next if occurrences.size < 2
 
             {
@@ -135,6 +181,8 @@ module ActiveRecord
               total_duration_ms: occurrences.sum { |q| q.duration_ms || 0.0 },
             }
           end.sort_by { |d| -d[:count] }
+          @duplicate_groups_size = @queries.size
+          @duplicate_groups
         end
 
         def bind_values(binds)

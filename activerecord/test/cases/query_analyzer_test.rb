@@ -7,6 +7,7 @@ module ActiveRecord
     Normalizer = ActiveRecord::QueryAnalyzer::Normalizer
     Collector  = ActiveRecord::QueryAnalyzer::Collector
     Reporter   = ActiveRecord::QueryAnalyzer::Reporter
+    Subscriber = ActiveRecord::QueryAnalyzer::Subscriber
 
     def setup
       # AR's own suite has no executor to reset state between tests.
@@ -17,6 +18,7 @@ module ActiveRecord
     end
 
     def teardown
+      QueryAnalyzer.uninstall
       QueryAnalyzer.reset_configuration!
       Collector.reset
     end
@@ -48,6 +50,23 @@ module ActiveRecord
       a = Normalizer.normalize("SELECT * FROM t WHERE id IN (1, 2, 3)")
       b = Normalizer.normalize("SELECT * FROM t WHERE id IN (4, 5)")
       assert_equal a, b
+    end
+
+    test "normalizes floating point and scientific notation literals" do
+      assert_equal Normalizer.normalize("SELECT * FROM t WHERE x = 1.25"),
+                   Normalizer.normalize("SELECT * FROM t WHERE x = 9.99")
+      assert_equal Normalizer.normalize("SELECT * FROM t WHERE x = 1.5e10"),
+                   Normalizer.normalize("SELECT * FROM t WHERE x = 1.5e11")
+    end
+
+    test "normalizes negative numeric literals" do
+      assert_equal Normalizer.normalize("SELECT * FROM t WHERE x = -5"),
+                   Normalizer.normalize("SELECT * FROM t WHERE x = 7")
+    end
+
+    test "honors the SQL escaped quote inside string literals" do
+      assert_equal Normalizer.normalize(%q{SELECT * FROM u WHERE name = 'O''Brien'}),
+                   Normalizer.normalize(%q{SELECT * FROM u WHERE name = 'Smith'})
     end
 
     test "does not confuse digits inside strings with numeric literals" do
@@ -167,6 +186,18 @@ module ActiveRecord
       assert_nil Collector.current_without_create
     end
 
+    # --- Memory bounding -----------------------------------------------------
+
+    test "caps retained queries at max_queries but keeps counting" do
+      QueryAnalyzer.max_queries = 3
+      collector = Collector.new
+      10.times { |i| collector.record(sql: %Q{SELECT * FROM t WHERE id = #{i}}, duration_ms: 0.1) }
+
+      assert collector.overflowed?
+      assert_equal 3, collector.analyzed_count
+      assert_equal 10, collector.total_count
+    end
+
     # --- Reporting -----------------------------------------------------------
 
     test "reporter includes totals, duplicates and N+1 guidance" do
@@ -190,6 +221,20 @@ module ActiveRecord
 
     # --- Subscriber / end to end (via instrumentation) -----------------------
 
+    test "records the measured duration from the instrumentation event" do
+      QueryAnalyzer.reset_configuration!
+      collector = QueryAnalyzer.analyze do
+        ActiveSupport::Notifications.instrument("sql.active_record", sql: "SELECT 1", name: "SQL") do
+          sleep 0.01
+        end
+      end
+
+      assert_equal 1, collector.total_count
+      duration = collector.queries.first.duration_ms
+      assert_not_nil duration, "duration must be derived from the event, not the payload"
+      assert_operator duration, :>=, 5.0
+    end
+
     test "analyze captures queries emitted through instrumentation" do
       QueryAnalyzer.reset_configuration!
       collector = QueryAnalyzer.analyze do
@@ -205,8 +250,24 @@ module ActiveRecord
 
       assert_equal 2, collector.total_count
       assert_equal 1, collector.duplicates.size
-    ensure
-      QueryAnalyzer.uninstall
+      assert_not Subscriber.subscribed?, "analyze must leave no subscription behind"
+    end
+
+    test "analyze does not corrupt a surrounding request's collector" do
+      QueryAnalyzer.reset_configuration!
+      QueryAnalyzer.enabled = true
+      QueryAnalyzer.install
+
+      outer = Collector.current
+      outer.record(sql: "SELECT * FROM outer WHERE id = 1", duration_ms: 0.1)
+
+      inner = QueryAnalyzer.analyze do
+        ActiveSupport::Notifications.instrument("sql.active_record", sql: "SELECT * FROM inner WHERE id = 1", name: "SQL")
+      end
+
+      assert_equal 1, inner.total_count
+      assert_same outer, Collector.current_without_create
+      assert_equal 1, outer.total_count
     end
 
     test "subscriber ignores schema and transaction statements" do
