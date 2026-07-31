@@ -44,6 +44,14 @@ module ActiveRecord
     config.active_record.dump_schema_migrations = false
     config.active_record.dump_schema_migrations_sort_by = :reverse
 
+    config.active_record.query_analyzer = false
+    config.active_record.query_analyzer_n_plus_one_threshold = 5
+    config.active_record.query_analyzer_detect_duplicates = true
+    config.active_record.query_analyzer_detect_n_plus_one = true
+    config.active_record.query_analyzer_slow_query_threshold = nil
+    config.active_record.query_analyzer_max_tracked_queries = 1000
+    config.active_record.query_analyzer_reporter = nil
+
     config.active_record.queues = ActiveSupport::InheritableOptions.new
 
     config.eager_load_namespaces << ActiveRecord
@@ -252,6 +260,13 @@ To keep using the current cache store, you can turn off cache versioning entirel
           :postgresql_adapter_decode_money,
           :postgresql_adapter_decode_bytea,
           :use_legacy_signed_id_verifier,
+          :query_analyzer,
+          :query_analyzer_n_plus_one_threshold,
+          :query_analyzer_detect_duplicates,
+          :query_analyzer_detect_n_plus_one,
+          :query_analyzer_slow_query_threshold,
+          :query_analyzer_max_tracked_queries,
+          :query_analyzer_reporter,
         )
 
         configs_used_in_other_initializers.each do |k, v|
@@ -430,6 +445,60 @@ To keep using the current cache store, you can turn off cache versioning entirel
           if app.config.active_record.query_log_tags_prepend_comment
             ActiveRecord::QueryLogs.prepend_comment = true
           end
+        end
+      end
+    end
+
+    initializer "active_record.query_analyzer" do |app|
+      config.after_initialize do
+        ar_config = app.config.active_record
+
+        # The analyzer instruments every query, so it is meant for development
+        # and test unless an application opts in explicitly.
+        enabled = ar_config.query_analyzer
+
+        if enabled && !(Rails.env.development? || Rails.env.test?)
+          ActiveRecord::Base.logger&.warn(
+            "[ActiveRecord::QueryAnalyzer] The query analyzer is intended for " \
+            "development and test environments. It is enabled in " \
+            "#{Rails.env}, which will add overhead to every query."
+          )
+        end
+
+        ActiveRecord::QueryAnalyzer.enabled = enabled
+
+        unless ar_config.query_analyzer_n_plus_one_threshold.nil?
+          ActiveRecord::QueryAnalyzer.n_plus_one_threshold =
+            ar_config.query_analyzer_n_plus_one_threshold
+        end
+
+        unless ar_config.query_analyzer_detect_duplicates.nil?
+          ActiveRecord::QueryAnalyzer.detect_duplicates =
+            ar_config.query_analyzer_detect_duplicates
+        end
+
+        unless ar_config.query_analyzer_detect_n_plus_one.nil?
+          ActiveRecord::QueryAnalyzer.detect_n_plus_one =
+            ar_config.query_analyzer_detect_n_plus_one
+        end
+
+        # nil is meaningful here -- it disables slow query reporting -- so this
+        # is assigned unconditionally rather than guarded like the others.
+        ActiveRecord::QueryAnalyzer.slow_query_threshold =
+          ar_config.query_analyzer_slow_query_threshold
+
+        unless ar_config.query_analyzer_max_tracked_queries.nil?
+          ActiveRecord::QueryAnalyzer.max_tracked_queries =
+            ar_config.query_analyzer_max_tracked_queries
+        end
+
+        if ar_config.query_analyzer_reporter
+          ActiveRecord::QueryAnalyzer.reporter = ar_config.query_analyzer_reporter
+        end
+
+        if enabled
+          ActiveRecord::QueryAnalyzer.install_subscriber
+          ActiveRecord::QueryAnalyzer.install_executor_hooks(app.executor)
         end
       end
     end

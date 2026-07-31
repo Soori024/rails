@@ -66,6 +66,7 @@ module ActiveRecord
   autoload :NestedAttributes
   autoload :NoTouching
   autoload :Persistence
+  autoload :QueryAnalyzer
   autoload :QueryCache
   autoload :QueryLogs
   autoload :Querying
