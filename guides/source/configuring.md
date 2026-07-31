@@ -1557,6 +1557,73 @@ The default value depends on the `config.load_defaults` target version:
 | (original)            | `false`              |
 | 7.1                   | `true`               |
 
+#### `config.active_record.query_analyzer`
+
+Enables the Active Record query analyzer, which observes the SQL Active Record
+executes and logs a summary of duplicate and potential N+1 queries at the end of
+each request. Defaults to `false`.
+
+```ruby
+# config/environments/development.rb
+config.active_record.query_analyzer = true
+```
+
+```
+[ActiveRecord::QueryAnalyzer] 27 queries (0 cached) in 14.2ms
+  Duplicate queries (12 redundant):
+    13x  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ?
+  Potential N+1 queries:
+    13x  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ? (consider eager loading :authors)
+```
+
+You can also analyze a block of code directly, which is useful in tests:
+
+```ruby
+report = ActiveRecord::QueryAnalyzer.analyze do
+  Post.all.each { |post| post.author.name }
+end
+
+report.n_plus_one?           # => true
+report.duplicate_query_count # => 12
+report.to_h                  # => structured data for a custom reporter
+```
+
+WARNING: The analyzer instruments every query, so it is intended for development
+and test environments. Enabling it in production logs a warning and adds
+overhead to each query.
+
+#### `config.active_record.query_analyzer_n_plus_one_threshold`
+
+The number of times a parameterized `SELECT` against the same table must repeat
+before it is reported as a potential N+1. Defaults to `5`.
+
+#### `config.active_record.query_analyzer_detect_duplicates`
+
+Specifies whether the query analyzer reports duplicate queries. Defaults to `true`.
+
+#### `config.active_record.query_analyzer_detect_n_plus_one`
+
+Specifies whether the query analyzer reports potential N+1 queries. Defaults to `true`.
+
+#### `config.active_record.query_analyzer_max_tracked_queries`
+
+The maximum number of distinct query shapes tracked per request, which bounds
+the analyzer's memory use. Queries beyond this limit still count toward the
+totals but get no individual entry. Defaults to `1000`.
+
+#### `config.active_record.query_analyzer_reporter`
+
+A callable invoked with the report at the end of each request, instead of
+logging. Use it to send the report elsewhere:
+
+```ruby
+config.active_record.query_analyzer_reporter = ->(report) do
+  MyMetrics.record(report.to_h) if report.n_plus_one?
+end
+```
+
+Defaults to `nil`, which logs the summary to the Active Record logger.
+
 #### `config.active_record.query_log_tags_enabled`
 
 Specifies whether or not to enable adapter-level query comments. Defaults to `false`, but is set to `true` in the default generated `config/environments/development.rb` file.When this is set to `true` database prepared statements will be automatically disabled. If prepared statements are desired in conjunction with `query_log_tags` you must explicitly opt-out of ActiveRecords disabling mechanism: `config.active_record.disable_preprared_statments = false`.

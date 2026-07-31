@@ -1,3 +1,38 @@
+*   Add an optional query analyzer for development and test environments.
+
+    When enabled, the analyzer observes the SQL Active Record executes, groups
+    statements by their normalized shape, and logs a summary of duplicate and
+    potential N+1 queries at the end of each request.
+
+    ```ruby
+    # config/environments/development.rb
+    config.active_record.query_analyzer = true
+    ```
+
+    ```
+    [ActiveRecord::QueryAnalyzer] 27 queries (0 cached) in 14.2ms
+      Duplicate queries (12 redundant):
+        13x  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ?
+      Potential N+1 queries:
+        13x  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ? LIMIT ? (consider eager loading :authors)
+    ```
+
+    A block can also be analyzed directly, which is convenient in tests:
+
+    ```ruby
+    report = ActiveRecord::QueryAnalyzer.analyze do
+      Post.all.each { |post| post.author.name }
+    end
+
+    report.n_plus_one?           # => true
+    report.duplicate_query_count # => 12
+    ```
+
+    The analyzer is disabled by default, and attaches its subscriber only when
+    enabled, so applications that leave it off are unaffected.
+
+    *Chaithra4117*
+
 *   Deprecate the `pk`, `id_value`, and `sequence_name` positional arguments to
     `ActiveRecord::ConnectionAdapters::DatabaseStatements#insert`.
 
