@@ -1050,6 +1050,22 @@ irb> person.errors.messages
 
 Accepts a logger conforming to the interface of Log4r or the default Ruby Logger class, which is then passed on to any new database connections made. You can retrieve this logger by calling `logger` on either an Active Record model class or an Active Record model instance. Set to `nil` to disable logging.
 
+#### `config.active_record.query_analyzer`
+
+Enables the optional Query Analyzer, which observes the SQL Active Record executes and reports duplicate queries and potential N+1 patterns at the end of each request or test. It does not change how queries are executed.
+
+The default value is `false`. When set to `true` the analyzer only activates in the `development` and `test` environments; set it to `:force` to activate it in any environment (not recommended for production).
+
+#### `config.active_record.query_analyzer_options`
+
+A hash of options for the Query Analyzer. Recognized keys:
+
+* `:detect_duplicates` — report duplicate query templates. Defaults to `true`.
+* `:detect_n_plus_one` — report potential N+1 query patterns. Defaults to `true`.
+* `:n_plus_one_threshold` — number of times the same parameterized query must repeat against a table before it is flagged as a potential N+1. Defaults to `3`.
+
+The default value is `{}`.
+
 #### `config.active_record.primary_key_prefix_type`
 
 Lets you adjust the naming for primary key columns. By default, Rails assumes that primary key columns are named `id` (and this configuration option doesn't need to be set). There are two other choices:

@@ -44,6 +44,11 @@ module ActiveRecord
     config.active_record.dump_schema_migrations = false
     config.active_record.dump_schema_migrations_sort_by = :reverse
 
+    # Optional Query Analyzer. Disabled by default for complete backward
+    # compatibility; intended for development and test environments only.
+    config.active_record.query_analyzer = false
+    config.active_record.query_analyzer_options = {}
+
     config.active_record.queues = ActiveSupport::InheritableOptions.new
 
     config.eager_load_namespaces << ActiveRecord
@@ -315,6 +320,22 @@ To keep using the current cache store, you can turn off cache versioning entirel
       ActiveRecord::QueryCache.install_executor_hooks
       ActiveRecord::AsynchronousQueriesTracker.install_executor_hooks
       ActiveRecord::ConnectionAdapters::ConnectionPool.install_executor_hooks
+    end
+
+    initializer "active_record.query_analyzer" do |app|
+      if app.config.active_record.query_analyzer
+        env = Rails.env
+        # Guard against accidental production use: only activate in development
+        # and test unless the app has explicitly opted in for another env.
+        force = app.config.active_record.query_analyzer == :force
+        if force || env.development? || env.test?
+          ActiveSupport.on_load(:active_record) do
+            ActiveRecord::QueryAnalyzer.enabled = true
+            ActiveRecord::QueryAnalyzer.configure(app.config.active_record.query_analyzer_options || {})
+            ActiveRecord::QueryAnalyzer.install
+          end
+        end
+      end
     end
 
     initializer "active_record.add_watchable_files" do |app|

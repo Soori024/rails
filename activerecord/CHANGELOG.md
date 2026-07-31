@@ -1,3 +1,34 @@
+*   Add an optional Query Analyzer for Active Record.
+
+    When enabled, the analyzer observes every SQL query executed through Active
+    Record (via `sql.active_record` instrumentation, without changing how any
+    query runs), normalizes it, and reports duplicate query templates and
+    potential N+1 patterns at the end of each request or test.
+
+    It is disabled by default and, once enabled, only activates in the
+    development and test environments.
+
+    ```ruby
+    # config/environments/development.rb
+    config.active_record.query_analyzer = true
+    config.active_record.query_analyzer_options = {
+      detect_duplicates: true,
+      detect_n_plus_one: true,
+      n_plus_one_threshold: 3,
+    }
+    ```
+
+    It can also be used directly to profile a block of code:
+
+    ```ruby
+    collector = ActiveRecord::QueryAnalyzer.analyze do
+      Post.all.each { |post| post.author }
+    end
+    collector.potential_n_plus_ones # => [{ table: "authors", count: ... }]
+    ```
+
+    *Suresh*
+
 *   Deprecate the `pk`, `id_value`, and `sequence_name` positional arguments to
     `ActiveRecord::ConnectionAdapters::DatabaseStatements#insert`.
 
