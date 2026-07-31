@@ -49,6 +49,13 @@ module ActiveRecord
             end
           end
 
+          if summary[:slow_queries].any?
+            lines << "  Slow queries (>= #{QueryAnalyzer.slow_query_threshold_ms}ms):"
+            summary[:slow_queries].each do |slow|
+              lines << "    #{slow[:duration_ms].round(1)}ms  #{truncate(slow[:sql])}"
+            end
+          end
+
           lines.join("\n")
         end
 

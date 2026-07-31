@@ -18,6 +18,7 @@
       detect_duplicates: true,
       detect_n_plus_one: true,
       n_plus_one_threshold: 3,
+      slow_query_threshold_ms: 100,
       max_queries: 5000,
     }
     ```

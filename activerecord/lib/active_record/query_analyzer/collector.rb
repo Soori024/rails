@@ -139,6 +139,23 @@ module ActiveRecord
         @queries.count(&:cached)
       end
 
+      # Queries whose measured duration meets or exceeds +threshold+
+      # milliseconds, slowest first. Returns [] when slow-query monitoring is
+      # disabled (no threshold configured). Cached queries are excluded since
+      # their "duration" reflects cache lookup, not database work.
+      #
+      # Returns an array of hashes: { sql:, duration_ms:, adapter: }.
+      def slow_queries(threshold: QueryAnalyzer.slow_query_threshold_ms)
+        return [] if threshold.nil?
+
+        @queries.filter_map do |q|
+          next if q.cached
+          next if q.duration_ms.nil? || q.duration_ms < threshold
+
+          { sql: q.sql, duration_ms: q.duration_ms, adapter: q.adapter }
+        end.sort_by { |q| -q[:duration_ms] }
+      end
+
       # A plain-Ruby summary suitable for logging or assertions in tests.
       def summary
         dups = duplicates
@@ -148,6 +165,7 @@ module ActiveRecord
           duplicate_queries: dups.sum { |d| d[:count] },
           duplicate_groups: dups,
           potential_n_plus_ones: potential_n_plus_ones,
+          slow_queries: slow_queries,
           overflowed: overflowed?,
         }
       end

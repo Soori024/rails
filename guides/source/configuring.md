@@ -1063,6 +1063,7 @@ A hash of options for the Query Analyzer. Recognized keys:
 * `:detect_duplicates` — report duplicate query templates. Defaults to `true`.
 * `:detect_n_plus_one` — report potential N+1 query patterns. Defaults to `true`.
 * `:n_plus_one_threshold` — number of times the same parameterized query must repeat against a table before it is flagged as a potential N+1. Defaults to `3`.
+* `:slow_query_threshold_ms` — queries whose measured execution time meets or exceeds this many milliseconds are reported as slow. Set to `nil` (the default) to disable slow-query monitoring.
 * `:max_queries` — maximum number of queries retained per request for analysis. Queries beyond this cap are still counted but not stored, bounding the analyzer's memory use. Defaults to `5000`.
 
 The default value is `{}`.

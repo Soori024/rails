@@ -31,6 +31,8 @@ catch these issues early — during development and in the test suite.
 * **Duplicate detection** — counts repeated query templates within a unit of work.
 * **N+1 detection** — flags the same parameterized query repeated against one
   table beyond a configurable threshold, with an eager-loading suggestion.
+* **Slow-query monitoring** — flags queries whose measured duration meets or
+  exceeds a configurable threshold (opt-in, off by default).
 * **Summary reporting** — a developer-friendly end-of-request/test log summary.
 * **Configuration** — Rails config options, disabled by default.
 
@@ -40,10 +42,11 @@ catch these issues early — during development and in the test suite.
 # config/environments/development.rb
 config.active_record.query_analyzer = true
 config.active_record.query_analyzer_options = {
-  detect_duplicates: true,    # report duplicate query templates
-  detect_n_plus_one: true,    # report potential N+1 patterns
-  n_plus_one_threshold: 3,    # repetitions before flagging an N+1
-  max_queries: 5000,          # retention cap (bounds memory use)
+  detect_duplicates: true,      # report duplicate query templates
+  detect_n_plus_one: true,      # report potential N+1 patterns
+  n_plus_one_threshold: 3,      # repetitions before flagging an N+1
+  slow_query_threshold_ms: 100, # flag queries >= 100ms (nil disables)
+  max_queries: 5000,            # retention cap (bounds memory use)
 }
 ```
 
@@ -141,7 +144,6 @@ initializer in `railtie.rb`.
 
 ## Future enhancements
 
-* Slow-query threshold reporting (the duration is already captured).
 * Pluggable detectors/reporters (e.g. JSON output, a middleware panel).
 * Association-aware N+1 detection using reflection to reduce false positives.
 * Cross-database CI integration tests and a performance benchmark.

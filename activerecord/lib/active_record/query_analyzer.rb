@@ -27,10 +27,11 @@ module ActiveRecord
   # Fine-grained options:
   #
   #   config.active_record.query_analyzer_options = {
-  #     detect_duplicates: true,    # report duplicate query templates
-  #     detect_n_plus_one: true,    # report potential N+1 patterns
-  #     n_plus_one_threshold: 3,    # repetitions before flagging an N+1
-  #     max_queries: 5000,          # retention cap (bounds memory use)
+  #     detect_duplicates: true,      # report duplicate query templates
+  #     detect_n_plus_one: true,      # report potential N+1 patterns
+  #     n_plus_one_threshold: 3,      # repetitions before flagging an N+1
+  #     slow_query_threshold_ms: 100, # flag queries >= 100ms (nil disables)
+  #     max_queries: 5000,            # retention cap (bounds memory use)
   #   }
   #
   # Set +config.active_record.query_analyzer = :force+ to activate it outside
@@ -120,6 +121,15 @@ module ActiveRecord
         @max_queries || DEFAULT_MAX_QUERIES
       end
 
+      # Queries whose measured execution time (in milliseconds) meets or exceeds
+      # this threshold are flagged as slow in the report. Set to +nil+ (the
+      # default) to disable slow-query monitoring.
+      attr_accessor :slow_query_threshold_ms
+
+      def monitor_slow_queries?
+        !@slow_query_threshold_ms.nil?
+      end
+
       # Logger used for reporting. Falls back to ActiveRecord::Base.logger.
       attr_writer :logger
 
@@ -147,6 +157,7 @@ module ActiveRecord
         self.detect_n_plus_one    = options[:detect_n_plus_one]    if options.key?(:detect_n_plus_one)
         self.n_plus_one_threshold = options[:n_plus_one_threshold] if options.key?(:n_plus_one_threshold)
         self.max_queries          = options[:max_queries]          if options.key?(:max_queries)
+        self.slow_query_threshold_ms = options[:slow_query_threshold_ms] if options.key?(:slow_query_threshold_ms)
         self
       end
 
@@ -202,6 +213,7 @@ module ActiveRecord
         @detect_n_plus_one = nil
         @n_plus_one_threshold = nil
         @max_queries = nil
+        @slow_query_threshold_ms = nil
         @logger = nil
       end
     end

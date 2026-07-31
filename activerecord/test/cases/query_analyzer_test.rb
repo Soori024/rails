@@ -198,6 +198,42 @@ module ActiveRecord
       assert_equal 10, collector.total_count
     end
 
+    # --- Slow query monitoring -----------------------------------------------
+
+    test "slow query monitoring is disabled by default" do
+      assert_not QueryAnalyzer.monitor_slow_queries?
+      collector = Collector.new
+      collector.record(sql: "SELECT * FROM t", duration_ms: 999.0)
+      assert_empty collector.slow_queries
+    end
+
+    test "flags queries at or above the configured threshold, slowest first" do
+      QueryAnalyzer.slow_query_threshold_ms = 50
+      collector = Collector.new
+      collector.record(sql: "SELECT fast", duration_ms: 10.0)
+      collector.record(sql: "SELECT slow", duration_ms: 120.0)
+      collector.record(sql: "SELECT borderline", duration_ms: 50.0)
+
+      slow = collector.slow_queries
+      assert_equal 2, slow.size
+      assert_equal "SELECT slow", slow.first[:sql]
+      assert_equal 120.0, slow.first[:duration_ms]
+      assert_equal "SELECT borderline", slow.last[:sql]
+    end
+
+    test "slow query monitoring excludes cached queries" do
+      QueryAnalyzer.slow_query_threshold_ms = 10
+      collector = Collector.new
+      collector.record(sql: "SELECT cached", duration_ms: 500.0, cached: true)
+      assert_empty collector.slow_queries
+    end
+
+    test "configure accepts slow_query_threshold_ms" do
+      QueryAnalyzer.configure(slow_query_threshold_ms: 25)
+      assert QueryAnalyzer.monitor_slow_queries?
+      assert_equal 25, QueryAnalyzer.slow_query_threshold_ms
+    end
+
     # --- Reporting -----------------------------------------------------------
 
     test "reporter includes totals, duplicates and N+1 guidance" do
@@ -209,6 +245,17 @@ module ActiveRecord
       assert_includes message, "Duplicate queries: 4"
       assert_includes message, "Potential N+1"
       assert_includes message, "eager loading"
+    end
+
+    test "reporter includes a slow query section when the threshold is set" do
+      QueryAnalyzer.slow_query_threshold_ms = 50
+      collector = Collector.new
+      collector.record(sql: "SELECT * FROM big_table", duration_ms: 120.0)
+
+      message = Reporter.build_message(collector)
+      assert_includes message, "Slow queries (>= 50ms)"
+      assert_includes message, "120.0ms"
+      assert_includes message, "big_table"
     end
 
     test "reporter reports nothing for an empty collector" do
