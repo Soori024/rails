@@ -115,18 +115,41 @@ initializer in `railtie.rb`.
 
 ## Testing performed
 
-* New unit/integration test file `activerecord/test/cases/query_analyzer_test.rb`
-  — 29 tests covering: numeric/string/float/scientific-notation/negative literal
-  normalization, escaped quotes, `IN`-list collapsing, table extraction,
-  duplicate detection (+ toggle), N+1 detection (+ threshold, + toggle,
-  + non-parameterized exclusion), disabled-by-default, configuration, per-thread
-  isolation, the memory cap, real event-driven duration capture, reporting, and
-  `analyze` isolation from a surrounding request.
-* Result (via the Active Record test harness against SQLite):
-  **29 runs, 70 assertions, 0 failures, 0 errors, 0 skips.**
+Three test files plus a benchmark, all run via the Active Record test harness
+against SQLite (**0 failures / 0 errors** throughout):
+
+* **Unit** — `test/cases/query_analyzer_test.rb` (34 tests): literal
+  normalization (numeric/string/float/scientific-notation/negative/escaped
+  quotes), `IN`-list collapsing, table extraction, duplicate detection
+  (+ toggle), N+1 detection (+ threshold/toggle/non-parameterized exclusion),
+  slow-query monitoring (threshold boundary, ordering, cached exclusion),
+  disabled-by-default, configuration, per-thread isolation, memory cap, real
+  event-driven durations, reporting, and `analyze` isolation.
+* **Integration** — `test/cases/query_analyzer_integration_test.rb` (8 tests):
+  drives *real* Active Record queries (`Post`/`Author`/`Comment`) through the
+  full adapter → instrumentation → collector path — real query capture, real
+  measured durations, a real `Post → author` N+1, eager-loading avoidance,
+  duplicate detection, result-integrity (results unchanged while analyzing),
+  disabled-inertness, and slow-query flagging.
+* **Regression** — `test/cases/query_analyzer_regression_test.rb` (6 tests):
+  locks in each fixed defect (nil duration, scientific-notation fingerprint
+  fork, `analyze` collector corruption, warning-latch leak, PostgreSQL cast
+  mangling, memoized-grouping correctness).
+* **Benchmark** — `examples/query_analyzer_benchmark.rb`: measures normalization
+  and per-query collection overhead (benchmark-ips, with a stdlib fallback).
 * Regression canaries confirmed unaffected: `query_cache_test` (66),
   `log_subscriber_test` (50), `explain_test` (16), `relation_test` (59),
   `finder_test` (280) — all 0 failures.
+
+## Performance notes
+
+* The hot path is `Subscriber#call → Collector#record → Normalizer#normalize`,
+  run once per query only when the analyzer is enabled (development/test).
+* Bind *values* are no longer materialized on the hot path — only the bind
+  *count* is kept, since no detector or the reporter reads individual values.
+  This removes a `value_for_database` call per query.
+* `duplicate_groups` is memoized against the query count so end-of-request
+  reporting groups once, not per detector.
 
 ## Known limitations
 
@@ -140,13 +163,12 @@ initializer in `railtie.rb`.
 * **`table_name` picks the first `FROM` table**, so for complex JOIN/subquery
   SQL the reported table (used only for the eager-loading hint) may be the
   driving table rather than the associated one.
-* **No formal benchmark suite** is included in this PR (see future work).
 
 ## Future enhancements
 
 * Pluggable detectors/reporters (e.g. JSON output, a middleware panel).
 * Association-aware N+1 detection using reflection to reduce false positives.
-* Cross-database CI integration tests and a performance benchmark.
+* Cross-database CI runs (the suite currently runs against SQLite locally).
 
 ## Backward compatibility
 

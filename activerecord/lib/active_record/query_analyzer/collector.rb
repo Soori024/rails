@@ -15,7 +15,12 @@ module ActiveRecord
       STORE_KEY = :active_record_query_analyzer_collector
 
       # A single recorded query occurrence.
-      Query = Struct.new(:sql, :fingerprint, :duration_ms, :binds, :adapter, :cached, keyword_init: true)
+      #
+      # Only the number of bind parameters is retained (+bind_count+), not the
+      # values: the detectors and reporter never read individual bind values, so
+      # materializing them (via +value_for_database+) on the hot path would be
+      # wasted work. Keeping a count preserves useful metadata cheaply.
+      Query = Struct.new(:sql, :fingerprint, :duration_ms, :bind_count, :adapter, :cached, keyword_init: true)
 
       class << self
         # Returns the collector for the current execution context, creating one
@@ -55,8 +60,8 @@ module ActiveRecord
         @duplicate_groups_size = -1
       end
 
-      # Records a single observed query. +binds+ is captured defensively (a
-      # shallow copy of the values) to avoid retaining adapter internals.
+      # Records a single observed query. Only the bind *count* is kept (see the
+      # Query struct); bind values are not materialized on the hot path.
       #
       # To bound the analyzer's own memory footprint, no more than
       # QueryAnalyzer.max_queries statements are retained per unit of work; once
@@ -73,7 +78,7 @@ module ActiveRecord
           sql: sql,
           fingerprint: fingerprint,
           duration_ms: duration_ms,
-          binds: bind_values(binds),
+          bind_count: binds ? Array(binds).size : 0,
           adapter: adapter,
           cached: cached,
         )
@@ -201,21 +206,6 @@ module ActiveRecord
           end.sort_by { |d| -d[:count] }
           @duplicate_groups_size = @queries.size
           @duplicate_groups
-        end
-
-        def bind_values(binds)
-          return nil if binds.nil?
-          Array(binds).map do |bind|
-            bind.respond_to?(:value_for_database) ? safe_bind_value(bind) : bind
-          end
-        rescue StandardError
-          nil
-        end
-
-        def safe_bind_value(bind)
-          bind.value_for_database
-        rescue StandardError
-          bind.respond_to?(:value) ? bind.value : nil
         end
     end
   end
