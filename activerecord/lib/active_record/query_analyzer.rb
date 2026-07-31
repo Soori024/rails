@@ -27,21 +27,65 @@ module ActiveRecord
   # Fine-grained options:
   #
   #   config.active_record.query_analyzer_options = {
-  #     detect_duplicates: true,
-  #     detect_n_plus_one: true,
-  #     n_plus_one_threshold: 3,
+  #     detect_duplicates: true,    # report duplicate query templates
+  #     detect_n_plus_one: true,    # report potential N+1 patterns
+  #     n_plus_one_threshold: 3,    # repetitions before flagging an N+1
+  #     max_queries: 5000,          # retention cap (bounds memory use)
   #   }
   #
-  # == How it works
+  # Set +config.active_record.query_analyzer = :force+ to activate it outside
+  # development and test (not recommended for production).
   #
-  # * A Subscriber listens to +sql.active_record+ and feeds each query into a
-  #   request-scoped Collector (isolated per thread/fiber).
-  # * The Normalizer collapses literal values to placeholders so structurally
-  #   identical queries share a fingerprint.
-  # * The Collector aggregates fingerprints to count duplicates and flag
-  #   repeated per-record lookups as potential N+1 issues.
-  # * ExecutorHooks reset the collector at the start of each unit of work and,
-  #   at the end, hand it to the Reporter which logs a summary.
+  # == Usage
+  #
+  # Beyond the automatic end-of-request report, the analyzer can profile an
+  # arbitrary block and return the metrics directly:
+  #
+  #   collector = ActiveRecord::QueryAnalyzer.analyze do
+  #     Post.all.each { |post| post.author }   # classic N+1
+  #   end
+  #
+  #   collector.total_count           # => 11
+  #   collector.duplicates            # => [{ fingerprint:, count:, ... }]
+  #   collector.potential_n_plus_ones # => [{ table: "authors", count: 10, ... }]
+  #
+  # This is safe to call inside a live request: the surrounding request's
+  # metrics are preserved and the block's queries are isolated.
+  #
+  # == Example report
+  #
+  # At the end of a request or test, a summary like the following is logged:
+  #
+  #   [QueryAnalyzer] Summary
+  #     Total queries: 11 (0 cached)
+  #     Duplicate queries: 10
+  #     Duplicated templates:
+  #       10x  SELECT "authors".* FROM "authors" WHERE "authors"."id" = ?
+  #     Potential N+1 queries:
+  #       10x on `authors` — consider eager loading (e.g. `includes(:authors)`)
+  #         SELECT "authors".* FROM "authors" WHERE "authors"."id" = ?
+  #
+  # == Architecture
+  #
+  # The analyzer is a set of small, single-responsibility collaborators so that
+  # additional detectors or reporters can be added without touching query
+  # execution:
+  #
+  # * Normalizer — turns a raw SQL string into a stable fingerprint by
+  #   collapsing literals, bind placeholders and variable-length +IN+ lists.
+  #   Regexp based (no SQL parser) so it stays cheap on the hot path and behaves
+  #   uniformly across PostgreSQL, MySQL and SQLite.
+  # * Collector — a request-scoped, thread/fiber-isolated accumulator (stored in
+  #   ActiveSupport::IsolatedExecutionState) that records each query and derives
+  #   duplicate and N+1 diagnostics. Retention is capped by +max_queries+.
+  # * Subscriber — attaches to +sql.active_record+ using the event-object
+  #   subscription form (so the measured +duration+ is available) and feeds the
+  #   current Collector. It never raises into query execution.
+  # * Reporter — renders a Collector's metrics into a developer-friendly summary
+  #   and logs it.
+  # * ExecutorHooks — reset the collector when a unit of work begins and emit the
+  #   report when it completes, mirroring how ActiveRecord::QueryCache integrates
+  #   with the Rails executor.
   module QueryAnalyzer
     class << self
       # Whether the analyzer is active. Disabled by default.

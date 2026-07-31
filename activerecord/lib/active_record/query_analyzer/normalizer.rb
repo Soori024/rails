@@ -88,7 +88,7 @@ module ActiveRecord
 
         private
           def unquote(identifier)
-            identifier.delete('"').delete("`").delete("[").delete("]")
+            identifier.delete("\"").delete("`").delete("[").delete("]")
           end
       end
     end
